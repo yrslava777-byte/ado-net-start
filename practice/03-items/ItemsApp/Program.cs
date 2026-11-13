@@ -29,7 +29,6 @@ foreach (var item in await GetItemsAsync(dataSource, 1))
 }
 
 // Добавляет позицию в заказ и возвращает текст результата.
-// Сейчас любая ошибка базы завершает программу.
 static async Task<string> AddItemAsync(
     NpgsqlDataSource dataSource, int orderId, int productId, int quantity, decimal price)
 {
@@ -44,8 +43,23 @@ static async Task<string> AddItemAsync(
     command.Parameters.AddWithValue("quantity", quantity);
     command.Parameters.AddWithValue("price", price);
 
-    int rows = await command.ExecuteNonQueryAsync();
-    return $"Добавлено строк: {rows}";
+    try
+    {
+        int rows = await command.ExecuteNonQueryAsync();
+        return $"Добавлено строк: {rows}";
+    }
+    catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
+    {
+        return $"Товар {productId} уже есть в заказе {orderId}.";
+    }
+    catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.ForeignKeyViolation)
+    {
+        return $"Заказа {orderId} или товара {productId} нет в базе.";
+    }
+    catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.CheckViolation)
+    {
+        return $"Количество должно быть больше нуля, указано {quantity}.";
+    }
 }
 
 // Возвращает позиции заказа списком объектов OrderItemRow.
@@ -65,9 +79,15 @@ static async Task<List<OrderItemRow>> GetItemsAsync(NpgsqlDataSource dataSource,
     command.Parameters.AddWithValue("order", orderId);
 
     await using var reader = await command.ExecuteReaderAsync();
+    int productNameOrdinal = reader.GetOrdinal("product_name");
+    int quantityOrdinal = reader.GetOrdinal("quantity");
+    int priceOrdinal = reader.GetOrdinal("price");
     while (await reader.ReadAsync())
     {
-        // Здесь нужно создать OrderItemRow из текущей строки и добавить его в items.
+        items.Add(new OrderItemRow(
+            reader.GetString(productNameOrdinal),
+            reader.GetInt32(quantityOrdinal),
+            reader.GetDecimal(priceOrdinal)));
     }
 
     return items;
